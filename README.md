@@ -7,7 +7,6 @@ The application replaces manual service booking. It accepts a customer, vehicle,
 ## Submission Documents
 
 - [System Design Document](docs/SYSTEM_DESIGN.md)
-- [Video Presentation Script](docs/VIDEO_SCRIPT.md)
 
 ## Implemented Capabilities
 
