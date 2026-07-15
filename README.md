@@ -99,6 +99,26 @@ mvn clean test
 ~~~
 
 Docker must be running because the migration and concurrency tests use a real PostgreSQL container through Testcontainers.
+The Compose PostgreSQL container is not required for `mvn test`; Testcontainers starts
+an isolated PostgreSQL container on a random host port.
+
+### Recommended Test Order
+
+The tests are isolated and do not depend on execution order. `mvn clean test` is the
+authoritative command. When diagnosing a failure or demonstrating the layers, run them
+from the smallest scope to the largest scope:
+
+| Order | Command | Verifies |
+| --- | --- | --- |
+| 1 | `mvn -Dtest=SkillFitPolicyTest test` | Pure best-fit allocation and overlap rules. |
+| 2 | `mvn -Dtest=AppointmentSchedulerServiceTest test` | Booking, duration, fallback allocation, availability, and conflict behavior using the Spring application context. |
+| 3 | `mvn -Dtest=AppointmentControllerTest test` | HTTP request mapping, 201 response, Location header, and response body. |
+| 4 | `mvn -Dtest='PostgresMigrationTest#flywayCreatesSchemaAndApplicationCanUsePostgres' test` | Flyway and persistence against PostgreSQL 16. |
+| 5 | `mvn -Dtest='PostgresMigrationTest#concurrentBookingsNeverReceiveTheSameResources' test` | Simultaneous transactions and pessimistic locking against PostgreSQL 16. |
+| 6 | `mvn clean test` | All ten tests from a clean build. |
+
+Steps 1 to 3 use the test configuration and H2 in PostgreSQL compatibility mode.
+Steps 4 and 5 require a running Docker engine because they use Testcontainers.
 
 The suite covers:
 
@@ -299,6 +319,109 @@ The availability endpoint is informational and does not reserve a resource.
 POST /api/appointments runs the authoritative check and insert in one transaction. Immediately before checking resources, it obtains a PESSIMISTIC_WRITE lock on the dealership's service-bay rows in deterministic ID order. Because every appointment requires a bay, competing create requests for the same dealership cannot both confirm the same bay or technician.
 
 This favors correctness and simplicity over maximum same-dealership write throughput. A production system with substantially higher contention should add PostgreSQL temporal exclusion constraints and bounded allocation retry. The trade-off is explained in the System Design Document.
+
+### cURL Concurrency Demo
+
+This is the visible concurrency demo. Run the following steps in order.
+
+In terminal 1, start PostgreSQL and keep the application running:
+
+~~~bash
+docker compose up -d postgres
+mvn spring-boot:run
+~~~
+
+In terminal 2, choose an unused future time and submit two overlapping MOT requests.
+The trailing `&` starts each cURL process in the background; `wait` blocks until both
+responses have arrived:
+
+~~~bash
+BASE_URL=http://localhost:8080
+CONCURRENT_START=2030-01-16T09:00:00Z
+RESULT_DIR="$(mktemp -d)"
+
+# Remove only the fixed demo slot so this block can be run repeatedly.
+docker exec keyloop-postgres psql -U keyloop -d keyloop -c \
+  "delete from appointments
+   where service_type_code = 'MOT'
+     and start_time = '$CONCURRENT_START'::timestamptz;" > /dev/null
+
+curl -sS -o "$RESULT_DIR/first.json" -w "%{http_code}\n" \
+  -X POST "$BASE_URL/api/appointments" \
+  -H "Content-Type: application/json" \
+  --data "{
+    \"customerId\": 1,
+    \"vehicleId\": 1,
+    \"dealershipId\": 1,
+    \"serviceTypeCode\": \"MOT\",
+    \"requestedStart\": \"$CONCURRENT_START\"
+  }" > "$RESULT_DIR/first.status" &
+FIRST_PID=$!
+
+curl -sS -o "$RESULT_DIR/second.json" -w "%{http_code}\n" \
+  -X POST "$BASE_URL/api/appointments" \
+  -H "Content-Type: application/json" \
+  --data "{
+    \"customerId\": 2,
+    \"vehicleId\": 2,
+    \"dealershipId\": 1,
+    \"serviceTypeCode\": \"MOT\",
+    \"requestedStart\": \"$CONCURRENT_START\"
+  }" > "$RESULT_DIR/second.status" &
+SECOND_PID=$!
+
+wait "$FIRST_PID"
+wait "$SECOND_PID"
+
+printf "Request 1: HTTP %s\n" "$(cat "$RESULT_DIR/first.status")"
+printf "Request 2: HTTP %s\n" "$(cat "$RESULT_DIR/second.status")"
+printf "Request 1 body:\n"
+cat "$RESULT_DIR/first.json"
+printf "\nRequest 2 body:\n"
+cat "$RESULT_DIR/second.json"
+printf "\n"
+~~~
+
+Only technician 1 is qualified for MOT. The expected status set is one `201` and one
+`409`; which request wins is intentionally nondeterministic. The first transaction to
+obtain the lock creates the appointment. The other transaction waits, checks again
+after the lock is released, and returns `409` instead of double-booking technician 1.
+
+Still in terminal 2, confirm that PostgreSQL contains exactly one appointment for the
+contested slot:
+
+~~~bash
+docker exec keyloop-postgres psql -U keyloop -d keyloop -c \
+  "select id, customer_id, technician_id, service_bay_id, status
+   from appointments
+   where service_type_code = 'MOT'
+     and start_time = '$CONCURRENT_START'::timestamptz;"
+~~~
+
+The expected query result is one row using technician 1. The first command in the cURL
+block removes only this fixed demo slot, making the demo repeatable without resetting
+the rest of the database.
+
+The cURL test order is therefore:
+
+1. Start PostgreSQL.
+2. Start the application and wait for `Started KeyloopApplication`.
+3. Fire both background cURL requests from the same terminal block.
+4. Verify that the status codes are exactly `201` and `409`, in either order.
+5. Query PostgreSQL and verify that the contested slot contains exactly one row.
+
+### Automated Concurrency Test
+
+For a deterministic repeatable test, run:
+
+~~~bash
+mvn -Dtest='PostgresMigrationTest#concurrentBookingsNeverReceiveTheSameResources' test
+~~~
+
+This test uses latches to release two workers together. Both workers request
+`OIL_CHANGE`, for which enough resources exist, so both bookings must succeed with
+different `serviceBayId` and `technicianId` values. The cURL demo above is the visual
+proof for the API; this test is the automated regression check.
 
 ## AI Collaboration Narrative
 

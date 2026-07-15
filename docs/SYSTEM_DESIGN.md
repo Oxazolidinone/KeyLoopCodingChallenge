@@ -56,53 +56,9 @@ The original scenario intentionally leaves several details open. The implementat
 
 ### 4.1 Component Diagram
 
-~~~mermaid
-flowchart LR
-    Client["API client<br/>cURL / future UI"]
+[![Component architecture diagram](images/component-diagram.png)](images/component-diagram.png)
 
-    subgraph Middleware["Middleware ring"]
-        Controller["AppointmentController"]
-        ErrorHandler["GlobalExceptionHandler"]
-        HttpModels["Request / Response DTOs"]
-    end
-
-    subgraph Application["Application ring"]
-        AppService["AppointmentService<br/>AppointmentSchedulerService"]
-        AppModels["Commands / Queries / Views"]
-        Mapper["AppointmentMapper"]
-    end
-
-    subgraph Domain["Domain core"]
-        Entities["Entities and Value Objects"]
-        Policy["ResourceAssignmentPolicy<br/>SkillFitPolicy"]
-        Repositories["Spring Data Repository Interfaces"]
-    end
-
-    subgraph Infrastructure["Infrastructure and composition"]
-        Boot["Spring Boot Main"]
-        Config["Bean configuration and seed data"]
-        Flyway["Flyway migrations"]
-        JpaRuntime["Spring Data JPA / Hibernate"]
-    end
-
-    Database[("PostgreSQL")]
-
-    Client --> Controller
-    Controller --> HttpModels
-    Controller --> AppService
-    AppService --> AppModels
-    AppService --> Entities
-    AppService --> Policy
-    AppService --> Repositories
-    AppService --> Mapper
-    Repositories -. "runtime implementation" .-> JpaRuntime
-    JpaRuntime --> Database
-    Flyway --> Database
-    Boot -. "starts and scans" .-> Middleware
-    Boot -. "starts and scans" .-> Application
-    Config -. "wires policy and clock" .-> AppService
-    ErrorHandler -. "maps exceptions to HTTP" .-> Client
-~~~
+Diagram source: [component-diagram.mmd](diagrams/component-diagram.mmd).
 
 ### 4.2 Dependency Direction
 
@@ -141,67 +97,9 @@ This is intentionally a pragmatic rather than framework-pure Onion design. Repos
 
 ## 6. Data Model
 
-~~~mermaid
-erDiagram
-    CUSTOMER ||--o{ VEHICLE : owns
-    CUSTOMER ||--o{ APPOINTMENT : books
-    VEHICLE ||--o{ APPOINTMENT : receives
-    DEALERSHIP ||--o{ SERVICE_BAY : contains
-    DEALERSHIP ||--o{ TECHNICIAN : employs
-    DEALERSHIP ||--o{ APPOINTMENT : hosts
-    SERVICE_TYPE ||--o{ TECHNICIAN_QUALIFICATION : requires
-    TECHNICIAN ||--o{ TECHNICIAN_QUALIFICATION : has
-    SERVICE_TYPE ||--o{ APPOINTMENT : defines
-    TECHNICIAN ||--o{ APPOINTMENT : performs
-    SERVICE_BAY ||--o{ APPOINTMENT : hosts
+[![Entity relationship diagram](images/data-model.png)](images/data-model.png)
 
-    CUSTOMER {
-        bigint id PK
-        varchar name
-    }
-    VEHICLE {
-        bigint id PK
-        bigint customer_id FK
-        varchar registration_number UK
-    }
-    DEALERSHIP {
-        bigint id PK
-        varchar name
-    }
-    SERVICE_TYPE {
-        bigint id PK
-        varchar code UK
-        bigint duration_minutes
-    }
-    SERVICE_BAY {
-        bigint id PK
-        bigint dealership_id FK
-        varchar name
-    }
-    TECHNICIAN {
-        bigint id PK
-        bigint dealership_id FK
-        varchar name
-    }
-    TECHNICIAN_QUALIFICATION {
-        bigint id PK
-        bigint technician_id FK
-        bigint service_type_id FK
-    }
-    APPOINTMENT {
-        uuid id PK
-        bigint customer_id FK
-        bigint vehicle_id FK
-        bigint dealership_id FK
-        bigint service_type_id FK
-        bigint technician_id FK
-        bigint service_bay_id FK
-        timestamptz start_time
-        timestamptz end_time
-        varchar status
-        timestamptz created_at
-    }
-~~~
+Diagram source: [data-model.mmd](diagrams/data-model.mmd).
 
 Foreign keys protect all persisted associations. A unique constraint prevents duplicate technician qualifications. Appointment indexes support dealership, bay, and technician time-range lookups.
 
@@ -225,41 +123,9 @@ Concrete cURL requests are maintained in the repository README.
 
 ## 8. Booking Data Flow
 
-~~~mermaid
-sequenceDiagram
-    actor Client
-    participant API as AppointmentController
-    participant Scheduler as AppointmentSchedulerService
-    participant Repo as Domain Repositories
-    participant DB as PostgreSQL
-    participant Policy as SkillFitPolicy
+[![Appointment booking sequence diagram](images/booking-flow.png)](images/booking-flow.png)
 
-    Client->>API: POST /api/appointments
-    API->>Scheduler: ScheduleAppointmentCommand
-    Scheduler->>Repo: Load dealership, customer, vehicle, service type
-    Repo->>DB: SELECT reference data
-    DB-->>Repo: Reference records
-    Scheduler->>Scheduler: Validate ownership and calculate TimeWindow
-    Scheduler->>Repo: Lock dealership service bays
-    Repo->>DB: SELECT service_bays ... FOR UPDATE
-    Scheduler->>Repo: Query bay candidates, qualified technicians, overlaps
-    Repo->>DB: SELECT candidates and overlapping appointments
-    DB-->>Repo: Candidate projections and overlaps
-    Scheduler->>Policy: select(candidates, overlaps)
-
-    alt Resources available
-        Policy-->>Scheduler: ResourceAssignment
-        Scheduler->>Repo: Save confirmed Appointment
-        Repo->>DB: INSERT appointment
-        DB-->>Scheduler: Persisted appointment
-        Scheduler-->>API: AppointmentView
-        API-->>Client: 201 Created + Location
-    else No valid combination
-        Policy-->>Scheduler: Empty result
-        Scheduler-->>API: BookingConflictException
-        API-->>Client: 409 Conflict
-    end
-~~~
+Diagram source: [booking-flow.mmd](diagrams/booking-flow.mmd).
 
 The availability endpoint performs the candidate and overlap reads without a write lock because it does not reserve anything. Its result can become stale immediately. Correctness is enforced only by repeating the check in the create transaction.
 
@@ -399,6 +265,21 @@ Authentication is not required by the assessment and is not implemented. A produ
 | Middleware tests | HTTP request mapping, 201 response, Location header, and confirmed resource response. |
 | Migration integration test | Flyway schema creation and successful application use against PostgreSQL. |
 | Concurrency integration test | Two simultaneous requests cannot receive the same bay or technician. |
+
+Tests are isolated and have no ordering dependency. The recommended diagnostic order
+is domain policy, application service, middleware mapping, PostgreSQL migration,
+PostgreSQL concurrency, and finally the complete clean suite. Exact commands are in
+the [README test guide](../README.md#recommended-test-order).
+
+The concurrency test uses two executor threads and two latches. The `ready` latch
+ensures both workers have reached the gate, and `startTogether` releases them at the
+same time. Both transactions request `OIL_CHANGE` for the same dealership and time.
+The first transaction commits while holding the ordered service-bay locks; the second
+then rechecks overlaps and must choose another bay and technician. Assertions require
+both resource IDs to differ, and a timeout detects deadlock. The
+[cURL concurrency demo](../README.md#curl-concurrency-demo) sends two API requests in
+parallel and demonstrates single-technician contention as one 201 response, one 409
+response, and exactly one persisted appointment.
 
 The complete suite runs with:
 

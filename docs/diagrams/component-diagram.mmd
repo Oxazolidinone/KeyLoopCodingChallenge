@@ -1,0 +1,56 @@
+flowchart TB
+    Client["API client<br/>cURL / future UI"]
+
+    subgraph Middleware["Middleware ring"]
+        direction LR
+        Controller["AppointmentController"]
+        HttpModels["Request / Response DTOs"]
+        ErrorHandler["GlobalExceptionHandler"]
+        Controller --> HttpModels
+    end
+
+    subgraph Application["Application ring"]
+        direction LR
+        AppService["AppointmentService<br/>AppointmentSchedulerService"]
+        AppModels["Commands / Queries / Views"]
+        Mapper["AppointmentMapper"]
+        AppService --> AppModels
+        AppService --> Mapper
+    end
+
+    subgraph Domain["Domain core"]
+        direction LR
+        Entities["Entities and Value Objects"]
+        Policy["ResourceAssignmentPolicy<br/>SkillFitPolicy"]
+        Repositories["Spring Data Repository Interfaces"]
+    end
+
+    subgraph Infrastructure["Infrastructure and composition"]
+        direction LR
+        Boot["Spring Boot Main and configuration"]
+        JpaRuntime["Spring Data JPA / Hibernate"]
+        Flyway["Flyway migrations"]
+    end
+
+    Database[("PostgreSQL")]
+
+    Client --> Controller
+    Controller --> AppService
+    AppService --> Entities
+    AppService --> Policy
+    AppService --> Repositories
+    Repositories -. "runtime implementation" .-> JpaRuntime
+    JpaRuntime --> Database
+    Flyway --> Database
+
+    classDef middleware fill:#e8f1fb,stroke:#4878a8,color:#172b3a
+    classDef application fill:#e9f5ec,stroke:#4d8260,color:#173322
+    classDef domain fill:#fff4d6,stroke:#9b7a2f,color:#3a2c0f
+    classDef infrastructure fill:#eeeeee,stroke:#696969,color:#222222
+    classDef external fill:#f7e8ec,stroke:#9a5262,color:#3d1922
+
+    class Controller,HttpModels,ErrorHandler middleware
+    class AppService,AppModels,Mapper application
+    class Entities,Policy,Repositories domain
+    class Boot,JpaRuntime,Flyway infrastructure
+    class Client,Database external

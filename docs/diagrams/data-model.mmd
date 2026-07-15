@@ -1,0 +1,59 @@
+erDiagram
+    CUSTOMER ||--o{ VEHICLE : owns
+    CUSTOMER ||--o{ APPOINTMENT : books
+    VEHICLE ||--o{ APPOINTMENT : receives
+    DEALERSHIP ||--o{ SERVICE_BAY : contains
+    DEALERSHIP ||--o{ TECHNICIAN : employs
+    DEALERSHIP ||--o{ APPOINTMENT : hosts
+    SERVICE_TYPE ||--o{ TECHNICIAN_QUALIFICATION : requires
+    TECHNICIAN ||--o{ TECHNICIAN_QUALIFICATION : has
+    SERVICE_TYPE ||--o{ APPOINTMENT : defines
+    TECHNICIAN ||--o{ APPOINTMENT : performs
+    SERVICE_BAY ||--o{ APPOINTMENT : hosts
+
+    CUSTOMER {
+        bigint id PK
+        varchar name
+    }
+    VEHICLE {
+        bigint id PK
+        bigint customer_id FK
+        varchar registration_number UK
+    }
+    DEALERSHIP {
+        bigint id PK
+        varchar name
+    }
+    SERVICE_TYPE {
+        bigint id PK
+        varchar code UK
+        bigint duration_minutes
+    }
+    SERVICE_BAY {
+        bigint id PK
+        bigint dealership_id FK
+        varchar name
+    }
+    TECHNICIAN {
+        bigint id PK
+        bigint dealership_id FK
+        varchar name
+    }
+    TECHNICIAN_QUALIFICATION {
+        bigint id PK
+        bigint technician_id FK
+        bigint service_type_id FK
+    }
+    APPOINTMENT {
+        uuid id PK
+        bigint customer_id FK
+        bigint vehicle_id FK
+        bigint dealership_id FK
+        bigint service_type_id FK
+        bigint technician_id FK
+        bigint service_bay_id FK
+        timestamptz start_time
+        timestamptz end_time
+        varchar status
+        timestamptz created_at
+    }

@@ -1,0 +1,33 @@
+sequenceDiagram
+    actor Client
+    participant API as AppointmentController
+    participant Scheduler as AppointmentSchedulerService
+    participant Repo as Domain Repositories
+    participant DB as PostgreSQL
+    participant Policy as SkillFitPolicy
+
+    Client->>API: POST /api/appointments
+    API->>Scheduler: ScheduleAppointmentCommand
+    Scheduler->>Repo: Load dealership, customer, vehicle, service type
+    Repo->>DB: SELECT reference data
+    DB-->>Repo: Reference records
+    Scheduler->>Scheduler: Validate ownership and calculate TimeWindow
+    Scheduler->>Repo: Lock dealership service bays
+    Repo->>DB: SELECT service_bays ... FOR UPDATE
+    Scheduler->>Repo: Query bay candidates, qualified technicians, overlaps
+    Repo->>DB: SELECT candidates and overlapping appointments
+    DB-->>Repo: Candidate projections and overlaps
+    Scheduler->>Policy: select(candidates, overlaps)
+
+    alt Resources available
+        Policy-->>Scheduler: ResourceAssignment
+        Scheduler->>Repo: Save confirmed Appointment
+        Repo->>DB: INSERT appointment
+        DB-->>Scheduler: Persisted appointment
+        Scheduler-->>API: AppointmentView
+        API-->>Client: 201 Created + Location
+    else No valid combination
+        Policy-->>Scheduler: Empty result
+        Scheduler-->>API: BookingConflictException
+        API-->>Client: 409 Conflict
+    end
